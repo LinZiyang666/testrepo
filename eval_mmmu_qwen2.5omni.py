@@ -301,10 +301,8 @@ def run_inference_batch(
             prompt_lens = [inputs["input_ids"].shape[1]] * inputs["input_ids"].shape[0]
         else:
             prompt_lens = inputs["input_ids"].ne(pad_id).sum(dim=1).tolist()
-        prompt_len_for_slice = inputs["input_ids"].shape[1]
     else:
         prompt_lens = [0] * len(batch_conversations)
-        prompt_len_for_slice = 0
 
     gen_kwargs = dict(
         thinker_max_new_tokens=max_new_tokens,
@@ -361,7 +359,36 @@ def run_inference_batch(
     else:
         raise TypeError(f"Unsupported generate output type {type(gen_out)}")
 
-    gen_tokens = sequences[:, prompt_len_for_slice:]
+    pad_for_gen = processor.tokenizer.pad_token_id
+    if pad_for_gen is None:
+        pad_for_gen = processor.tokenizer.eos_token_id
+    if pad_for_gen is None:
+        pad_for_gen = 0
+
+    per_sample_outputs = []
+    max_gen = 0
+    for seq, prompt_len in zip(sequences, prompt_lens):
+        gen = seq[prompt_len:]
+        per_sample_outputs.append(gen)
+        if gen.shape[0] > max_gen:
+            max_gen = gen.shape[0]
+
+    if max_gen == 0:
+        gen_tokens = sequences.new_zeros((len(per_sample_outputs), 0), dtype=sequences.dtype, device=sequences.device)
+    else:
+        gen_tokens = sequences.new_full(
+            (len(per_sample_outputs), max_gen),
+            pad_for_gen,
+            dtype=sequences.dtype,
+            device=sequences.device,
+        )
+        for i, gen in enumerate(per_sample_outputs):
+            gen_tokens[i, : gen.shape[0]] = gen
+
+    if debug:
+        gen_lengths = [gen.shape[0] for gen in per_sample_outputs]
+        print(f"[debug] prompt_lens={prompt_lens}")
+        print(f"[debug] generated_token_lengths={gen_lengths}")
 
     decoded = processor.batch_decode(
         gen_tokens,
